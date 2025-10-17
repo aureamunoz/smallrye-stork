@@ -118,6 +118,54 @@ public class ConsulServiceDiscoveryTestUtils {
                 META_CONSUL_SERVICE_NODE_ADDRESS);
     }
 
+    public static void shouldRefetchWhenRefreshPeriodReached2(Stork stork, ConsulClient client, String serviceName,
+            List<String> tags) throws InterruptedException {
+        registerService(client, new ConsulRegisteringOptions(serviceName, 8406, tags, List.of("example.com")));
+
+        AtomicReference<List<ServiceInstance>> instances = new AtomicReference<>();
+
+        Service service = stork.getService(serviceName);
+        // call stork service discovery and gather service instances in the cache
+        service.getServiceDiscovery().getServiceInstances(tags.get(0))
+                .onFailure().invoke(th -> fail("Failed to get service instances from Consul", th))
+                .subscribe().with(instances::set);
+
+        await().atMost(Duration.ofSeconds(5))
+                .until(() -> instances.get() != null);
+
+        assertThat(instances.get()).hasSize(1);
+        assertThat(instances.get().get(0).getHost()).isEqualTo("example.com");
+        assertThat(instances.get().get(0).getPort()).isEqualTo(8406);
+
+        deregisterServiceInstances(client, instances.get());
+
+        //the service settings change in consul
+        List<String> sTags = List.of("secondary");
+        registerService(client, new ConsulRegisteringOptions(serviceName, 8506, sTags, List.of("another.example.com")));
+
+        // let's wait until the new services are populated to Stork (from Consul)
+        await().atMost(Duration.ofSeconds(7))
+                .until(() -> service.getServiceDiscovery().getServiceInstances().await().indefinitely().get(0).getHost()
+                        .equals("another.example.com"));
+
+        instances.set(null);
+        service.getServiceDiscovery().getServiceInstances()
+                .onFailure().invoke(th -> fail("Failed to get service instances from Consul", th))
+                .subscribe().with(instances::set);
+
+        await().atMost(Duration.ofSeconds(5))
+                .until(() -> instances.get() != null);
+
+        //Then stork gets the instances from consul
+        assertThat(instances.get()).hasSize(1);
+        assertThat(instances.get().get(0).getHost()).isEqualTo("another.example.com");
+        assertThat(instances.get().get(0).getPort()).isEqualTo(8506);
+        assertThat(instances.get().get(0).getLabels()).containsKey("secondary");
+        Metadata<ConsulMetadataKey> consulMetadata = (Metadata<ConsulMetadataKey>) instances.get().get(0).getMetadata();
+        assertThat(consulMetadata.getMetadata()).containsKeys(META_CONSUL_SERVICE_ID, META_CONSUL_SERVICE_NODE,
+                META_CONSUL_SERVICE_NODE_ADDRESS);
+    }
+
     public static void shouldRefetchWhenCacheInvalidated(ConsulClient client, Stork stork, String serviceName,
             List<String> tags) throws InterruptedException {
         registerService(client, new ConsulRegisteringOptions(serviceName, 8406, tags, List.of("example.com")));
